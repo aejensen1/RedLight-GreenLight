@@ -12,6 +12,7 @@ namespace RedLightGreenLight.Patches
         [HarmonyPostfix]
         public static void DisconnectPatch()
         {
+            RedLightGreenLight.mls.LogInfo("DisconnectPatch");
             RedLightGreenLight.Instance.EndGame();
         }
     }

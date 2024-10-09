@@ -12,6 +12,7 @@ namespace RedLightGreenLight.Patches
         [HarmonyPostfix]
         public static void LeaveGamePatch()
         {
+            RedLightGreenLight.mls.LogInfo("LeaveGamePatch");
             RedLightGreenLight.Instance.EndGame();
         }
     }

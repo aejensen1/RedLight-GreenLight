@@ -8,10 +8,8 @@ using RedLightGreenLight.Patches;
 using System;
 using Unity.Netcode;
 using GameNetcodeStuff;
-using RedLightGreenLight.Assets;
-using System.Numerics;
-
-
+using System.Runtime.CompilerServices;
+using System.Linq;
 
 namespace RedLightGreenLight
 {
@@ -24,12 +22,14 @@ namespace RedLightGreenLight
 
         private readonly Harmony harmony = new Harmony(modGUID);
         public static ManualLogSource mls;
-        private static RedLightGreenLight instance;
+        public static RedLightGreenLight instance;
 
         public static float delay;
         public static float yellowDelay = 2f;
-        private static bool isGreen;
+        public static bool isGreen;
         public static bool gameIsActive = false;
+        public static bool hostIsStartingGame = false;
+        public static bool clientIsStartingGame = false;
         private static List<int> damagePenalties;
         private static int penaltyNum;
         private PlayerControllerB player;
@@ -41,22 +41,15 @@ namespace RedLightGreenLight
         private UnityEngine.Quaternion previousCameraRotation;
         private UnityEngine.Quaternion currentCameraRotation;
 
-
-
-
         public static RedLightGreenLight Instance
         {
             get
             {
-                //mls.LogInfo("Instance");
                 if (instance == null)
                 {
-                    // Find existing instances
                     instance = FindObjectOfType<RedLightGreenLight>();
-
                     if (instance == null)
                     {
-                        // Create a new instance if none found
                         var gameObject = new GameObject("RedLightGreenLight");
                         DontDestroyOnLoad(gameObject);
                         instance = gameObject.AddComponent<RedLightGreenLight>();
@@ -76,32 +69,30 @@ namespace RedLightGreenLight
 
             instance = this;
             DontDestroyOnLoad(this.gameObject);
-
             mls = base.Logger;
 
             damagePenalties = new List<int> { 5, 10, 20, 40, 80, 160 };
 
             try
             {
-                harmony.Patch(original: AccessTools.Method(typeof(StartOfRound), "EndGameServerRpc"), postfix: new HarmonyMethod(typeof(StartOfRoundPatch), "EndGameServerRpcPatch"));
-                //mls.LogInfo("StartOfRound patches applied successfully.");
+                harmony.Patch(original: AccessTools.Method(typeof(StartOfRound), "EndGameServerRpc"),
+                    postfix: new HarmonyMethod(typeof(StartOfRoundPatch), "EndGameServerRpcPatch"));
 
-                harmony.Patch(original: AccessTools.Method(typeof(NetworkSceneManager), "OnSceneLoaded"), postfix: new HarmonyMethod(typeof(NetworkSceneManagerPatch), "OnSceneLoadedPatch"));
-                //mls.LogInfo("NetworkSceneManager patches applied successfully.");
+                harmony.Patch(original: AccessTools.Method(typeof(StartMatchLever), "StartGame"),
+                    postfix: new HarmonyMethod(typeof(StartMatchLeverPatch), "StartGamePatch"));
 
-                harmony.Patch(original: AccessTools.Method(typeof(GameNetworkManager), "Disconnect"), postfix: new HarmonyMethod(typeof(GameNetworkManagerPatch), "DisconnectPatch"));
-                //mls.LogInfo("GameNetworkManager patches applied successfully.");
+                harmony.Patch(original: AccessTools.Method(typeof(GameNetworkManager), "Disconnect"),
+                    postfix: new HarmonyMethod(typeof(GameNetworkManagerPatch), "DisconnectPatch"));
 
-                harmony.Patch(original: AccessTools.Method(typeof(QuickMenuManager), "LeaveGame"), postfix: new HarmonyMethod(typeof(QuickMenuManagerPatch), "LeaveGamePatch"));
-                //mls.LogInfo("QuickMenuManager patches applied successfully.");
-
+                harmony.Patch(original: AccessTools.Method(typeof(QuickMenuManager), "LeaveGame"),
+                    postfix: new HarmonyMethod(typeof(QuickMenuManagerPatch), "LeaveGamePatch"));
 
                 mls.LogInfo("Red Light Green Light patches applied successfully!");
             }
             catch (Exception ex)
             {
                 mls.LogError($"Failed to apply Harmony patches: {ex}");
-                throw; // Rethrow the exception to indicate initialization failure
+                throw;
             }
 
             mls.LogInfo("Finished loading Red Light Green Light");
@@ -109,12 +100,52 @@ namespace RedLightGreenLight
 
         public void BeginGame()
         {
-            player = FindObjectOfType<PlayerControllerB>();
+            // Check if the game is already starting to prevent re-entry
+            if (hostIsStartingGame && NetworkManager.Singleton.IsHost)
+            {
+                Debug.Log("BeginGame is already in progress. Exiting to prevent infinite loop.");
+                return;
+            }
+            else
+                hostIsStartingGame = true; // Set the flag to indicate that the game is starting
+
+            if (clientIsStartingGame && !NetworkManager.Singleton.IsHost)
+            {
+                Debug.Log("BeginGame is already in progress. Exiting to prevent infinite loop.");
+                return;
+            }
+            else
+                clientIsStartingGame = true; // Set the flag to indicate that the game is starting
+
+            RedLightGreenLightNetworkManager.Instance.StartGameOnHost();
+
+            ulong localClientId = NetworkManager.Singleton.LocalClientId; // Get the local client's ID
+
+            // Assign the local player using the same logic as for the host
+            player = RedLightGreenLightNetworkManager.Instance.FindLocalPlayer(localClientId);
+
+            if (player != null)
+            {
+                mls.LogInfo("Local player found and assigned.");
+            }
+            else
+            {
+                mls.LogError("Local player not found!");
+            }
+
+            //Test logging to check for clients:
+            foreach (var client in NetworkManager.Singleton.ConnectedClientsList)
+            {
+                mls.LogInfo($"Connected client ID: {client.ClientId}");
+            }
+
             penaltyDealt = false;
             isGreen = true;
             penaltyNum = 0;
             gameIsActive = true;
+            
             mls.LogInfo("Begin Green Light/Red Light");
+
             if (!gameCyclesActive)
             {
                 StartCoroutine(GameCycles());
@@ -124,39 +155,44 @@ namespace RedLightGreenLight
         public void EndGame()
         {
             gameIsActive = false;
+            hostIsStartingGame = false;
+            clientIsStartingGame = false;
             mls.LogInfo("End Green Light/Red Light");
         }
 
-        IEnumerator GameCycles()
+        public IEnumerator GameCycles()
         {
             gameCyclesActive = true;
+
             while (gameIsActive)
             {
-                if (isGreen) // Longer delay for green light
-                {
-                    delay = UnityEngine.Random.Range(7f, 12f);
-                    mls.LogInfo($"Delay until next light change: {delay} seconds");
-                }
-                else // Shorter delay for red light
-                {
-                    delay = UnityEngine.Random.Range(5f, 10f);
-                    mls.LogInfo($"Delay until next light change: {delay} seconds");
-                }
+                delay = isGreen ? UnityEngine.Random.Range(7f, 12f) : UnityEngine.Random.Range(5f, 10f);
+                mls.LogInfo($"Delay until next light change: {delay} seconds");
 
                 yield return new WaitForSecondsRealtime(delay);
-                
-                if (isGreen) // yellow warning light (grace period)
+                if (!gameIsActive)
                 {
-                    mls.LogInfo($"Yellow Light activated");
+                    waitForMovementActive = false;
+                    gameCyclesActive = false;
+                    break;
+                }
+
+                if (isGreen)
+                {
+                    mls.LogInfo("Yellow Light activated");
                     mls.LogInfo($"Delay until next light change: {yellowDelay} seconds");
                     yield return new WaitForSecondsRealtime(yellowDelay);
-                    mls.LogInfo($"Red Light activated");
-                    penaltyDealt = false;
+                    if (!gameIsActive)
+                    {
+                        waitForMovementActive = false;
+                        gameCyclesActive = false;
+                        break;
+                    }
                 }
-                else
-                    mls.LogInfo($"Green Light activated");
 
-                isGreen = !isGreen; // Toggle light status
+                mls.LogInfo(!isGreen ? "Green Light activated" : "Red Light activated");
+                isGreen = !isGreen;
+
                 if (!waitForMovementActive && !isGreen)
                 {
                     StartCoroutine(WaitForMovement());
@@ -167,22 +203,27 @@ namespace RedLightGreenLight
 
         IEnumerator WaitForMovement()
         {
+            if (player == null)
+            {
+                mls.LogError("Player is null in WaitForMovement.");
+                yield break;
+            }
+
+            mls.LogInfo($"Player object: {player.gameObject.name}");
+
             waitForMovementActive = true; // Prevent multiple instances of this coroutine
             currentCameraRotation = player.gameplayCamera.transform.rotation; // Reset the base case for camera rotation
             previousCameraRotation = currentCameraRotation;
 
-            while (!isGreen && !penaltyDealt)
+            while (!isGreen && !penaltyDealt && gameIsActive)
             {
-                if (player != null) // Check if player exists and is not in the green state
+                if (player != null) // Check if the local player exists and is not in the green state
                 {
-                    // Check if the player has moved physically
                     mls.LogInfo($"player.timeSincePlayerMoving: {player.timeSincePlayerMoving}");
                     if (player.timeSincePlayerMoving < 0.1f)
                     {
-                        
-                        //mls.LogInfo($"player.velocity: {player.velocity}"); // This is always 0,0,0
                         mls.LogInfo("Player moved. Damaging Player.");
-                        DamagePlayer();
+                        DamagePlayer(); // Damage the local player
                     }
 
                     // Check for camera movement
@@ -193,19 +234,26 @@ namespace RedLightGreenLight
                         // Define a rotation threshold
                         float rotationThreshold = 2.0f; // Adjust this as needed
 
-                        mls.LogInfo($"currentCameraRotation: {currentCameraRotation}");
-                        mls.LogInfo($"previousCameraRotation: {previousCameraRotation}");
                         // Check if the rotation has changed beyond the threshold
                         if (UnityEngine.Quaternion.Angle(currentCameraRotation, previousCameraRotation) > rotationThreshold)
                         {
                             mls.LogInfo("Camera moved. Damaging Player.");
-                            DamagePlayer();
+                            DamagePlayer(); // Damage the local player
                         }
                     }
-
                 }
+
                 yield return new WaitForSecondsRealtime(0.1f); // Wait before checking again
+                if (!gameIsActive)
+                {
+                    waitForMovementActive = false;
+                    gameCyclesActive = false;
+                    break;
+                }
             }
+
+            // Reset the flag after the coroutine ends
+            penaltyDealt = false;
             waitForMovementActive = false;
         }
 
@@ -214,7 +262,7 @@ namespace RedLightGreenLight
         {
             if (penaltyNum < damagePenalties.Count)
             {
-                player.DamagePlayer(damagePenalties[penaltyNum], true, true, CauseOfDeath.Unknown, 0, false, default(UnityEngine.Vector3));
+                player.DamagePlayer(damagePenalties[penaltyNum], true, true, CauseOfDeath.Unknown, 0, false, default);
                 mls.LogInfo($"Player took {damagePenalties[penaltyNum]} damage for moving during a red light.");
                 penaltyNum++;
             }
@@ -222,9 +270,23 @@ namespace RedLightGreenLight
             {
                 mls.LogInfo("Player took too much damage. Killing player.");
                 UnityEngine.Vector3 bodyVelocity = new UnityEngine.Vector3(0, 5f, 0);
-                player.KillPlayer(bodyVelocity, true, CauseOfDeath.Unknown, 0, default(UnityEngine.Vector3));
+                player.KillPlayer(bodyVelocity, true, CauseOfDeath.Unknown, 0, default);
             }
             penaltyDealt = true;
+        }
+
+        // Method to synchronize light change and delay
+        public void SyncLightChange(bool isCurrentlyGreen, float syncDelay)
+        {
+            isGreen = isCurrentlyGreen;
+            delay = syncDelay;
+
+            mls.LogInfo($"Light state changed on client side. Is Green: {isGreen}, Delay: {delay}");
+
+            if (!isGreen && !waitForMovementActive)
+            {
+                StartCoroutine(WaitForMovement());
+            }
         }
     }
 }

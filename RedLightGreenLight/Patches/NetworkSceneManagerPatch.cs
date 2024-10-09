@@ -11,6 +11,7 @@ namespace RedLightGreenLight.Patches
         [HarmonyPostfix]
         public static void OnSceneLoadedPatch()
         {
+            RedLightGreenLight.mls.LogInfo("OnSceneLoadedPatch");
             RedLightGreenLight.Instance.BeginGame();
         }
     }

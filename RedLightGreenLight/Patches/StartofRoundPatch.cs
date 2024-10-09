@@ -12,6 +12,7 @@ namespace RedLightGreenLight.Patches
         [HarmonyPostfix]
         public static void EndGameServerRpcPatch(int playerClientId)
         {
+            RedLightGreenLight.mls.LogInfo("EndGameServerRpcPatch");
             RedLightGreenLight.Instance.EndGame();
         }
     }

@@ -4,7 +4,7 @@ using System.Text;
 
 namespace RedLightGreenLight.Assets
 {
-    public class CustomCauseOfDeath
+    public class CustomCauseOfDeath //Not really used, but might be used in the future for custom death messages
     {
         public enum CauseOfDeath
         {
