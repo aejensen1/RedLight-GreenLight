@@ -5,12 +5,12 @@ using UnityEngine.SceneManagement;
 namespace RedLightGreenLight.Patches
 {
     
-    [HarmonyPatch(typeof(StartOfRound))]
-    public class StartOfRoundPatch
+    [HarmonyPatch(typeof(GameNetworkManager))]
+    public class GameNetworkManagerPatch
     {
-        [HarmonyPatch("EndGameServerRpc")]
+        [HarmonyPatch("Disconnect")]
         [HarmonyPostfix]
-        public static void EndGameServerRpcPatch(int playerClientId)
+        public static void DisconnectPatch()
         {
             RedLightGreenLight.Instance.EndGame();
         }
